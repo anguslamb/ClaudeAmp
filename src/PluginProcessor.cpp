@@ -507,9 +507,9 @@ void ClaudeAmpProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     *presenceFilter.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
         oversampledRate, 3000.0f, 0.707f, presenceGain);
 
-    // Update master volume (0-10 → -40 to +6 dB for more usable range)
+    // Update master volume (0-10 → -20 to +20 dB)
     auto& masterGain = plexiChain.get<18>();
-    auto masterDB = -40.0f + (currentMaster * 4.6f);  // 0→-40dB, 5→-17dB, 10→+6dB
+    auto masterDB = -20.0f + (currentMaster * 4.0f);  // 0→-20dB, 5→0dB, 10→+20dB
     masterGain.setGainDecibels (masterDB);
 
     // Process audio through chain with oversampling
