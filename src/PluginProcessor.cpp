@@ -52,6 +52,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout ClaudeAmpProcessor::createPa
         juce::NormalisableRange<float> (0.0f, 10.0f, 0.1f),
         5.0f));
 
+    // Presence (0-10) - high-frequency clarity
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        "presence",
+        "Presence",
+        juce::NormalisableRange<float> (0.0f, 10.0f, 0.1f),
+        5.0f));
+
     // Master Volume (0-10)
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         "master",
@@ -145,6 +152,20 @@ void ClaudeAmpProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     );
     oversampler->initProcessing (static_cast<size_t> (samplesPerBlock));
 
+    // Initialize look-up tables for tube saturation curves
+    // 12AX7 preamp tube: Asymmetric (harder positive clipping)
+    tube12AX7LUT.initialise ([](float x) {
+        if (x > 0.0f)
+            return std::tanh (x * 1.8f);      // Harder positive clipping
+        else
+            return std::tanh (x * 1.2f);      // Softer negative
+    }, -5.0f, 5.0f, 256);  // 256 points for accuracy
+
+    // EL34 power amp tube: More symmetrical, softer clipping
+    tubeEL34LUT.initialise ([](float x) {
+        return std::tanh (x * 0.8f);          // Softer, more symmetrical
+    }, -5.0f, 5.0f, 128);  // 128 points sufficient for symmetric curve
+
     // Prepare the entire Plexi chain with oversampled spec
     auto oversampledSpec = spec;
     oversampledSpec.sampleRate = sampleRate * 4.0;
@@ -155,69 +176,83 @@ void ClaudeAmpProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     auto& inputGain = plexiChain.get<0>();
     inputGain.setGainDecibels (0.0f);
 
-    // Configure Stage 1: Preamp stage 1 bias (asymmetric for 12AX7)
-    auto& bias1 = plexiChain.get<1>();
+    // Configure Stage 1: Pre-emphasis (+6 dB @ 5 kHz before saturation)
+    auto& preEmph = plexiChain.get<1>();
+    *preEmph.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
+        sampleRate * 4.0, 5000.0f, 0.707f, 1.995f);  // +6 dB
+
+    // Configure Stage 2: Preamp stage 1 bias (asymmetric for 12AX7)
+    auto& bias1 = plexiChain.get<2>();
     bias1.setBias (0.3f);
 
-    // Configure Stage 2: Preamp stage 1 waveshaper (12AX7 tube)
-    auto& stage1 = plexiChain.get<2>();
+    // Configure Stage 3: Preamp stage 1 waveshaper (12AX7 tube)
+    auto& stage1 = plexiChain.get<3>();
     stage1.functionToUse = [](float x) {
-        return std::tanh (x * 1.5f);  // Harder positive clipping
+        return (x > 0.0f) ? std::tanh (x * 1.8f) : std::tanh (x * 1.2f);
     };
 
-    // Configure Stage 3: Coupling capacitor HPF (~20 Hz)
-    auto& hpf1 = plexiChain.get<3>();
+    // Configure Stage 4: Coupling capacitor HPF (~20 Hz)
+    auto& hpf1 = plexiChain.get<4>();
     hpf1.setType (juce::dsp::StateVariableTPTFilterType::highpass);
     hpf1.setCutoffFrequency (20.0f);
     hpf1.setResonance (0.707f);
 
-    // Configure Stage 4: Preamp stage 2 bias
-    auto& bias2 = plexiChain.get<4>();
+    // Configure Stage 5: Preamp stage 2 bias
+    auto& bias2 = plexiChain.get<5>();
     bias2.setBias (0.35f);
 
-    // Configure Stage 5: Preamp stage 2 waveshaper (12AX7)
-    auto& stage2 = plexiChain.get<5>();
+    // Configure Stage 6: Preamp stage 2 waveshaper (12AX7)
+    auto& stage2 = plexiChain.get<6>();
     stage2.functionToUse = [](float x) {
-        return std::tanh (x * 1.5f);
+        return (x > 0.0f) ? std::tanh (x * 1.8f) : std::tanh (x * 1.2f);
     };
 
-    // Configure Stage 6: Coupling HPF 2
-    auto& hpf2 = plexiChain.get<6>();
+    // Configure Stage 7: Coupling HPF 2
+    auto& hpf2 = plexiChain.get<7>();
     hpf2.setType (juce::dsp::StateVariableTPTFilterType::highpass);
     hpf2.setCutoffFrequency (20.0f);
     hpf2.setResonance (0.707f);
 
-    // Configure Stage 7: Preamp stage 3 bias
-    auto& bias3 = plexiChain.get<7>();
+    // Configure Stage 8: Preamp stage 3 bias
+    auto& bias3 = plexiChain.get<8>();
     bias3.setBias (0.4f);  // Heaviest saturation stage
 
-    // Configure Stage 8: Preamp stage 3 waveshaper (12AX7)
-    auto& stage3 = plexiChain.get<8>();
+    // Configure Stage 9: Preamp stage 3 waveshaper (12AX7)
+    auto& stage3 = plexiChain.get<9>();
     stage3.functionToUse = [](float x) {
-        return std::tanh (x * 1.8f);  // Hardest clipping
+        return (x > 0.0f) ? std::tanh (x * 1.8f) : std::tanh (x * 1.2f);
     };
 
-    // Configure Stage 9-11: Tone stack (configured in processBlock with proper coefficients)
+    // Configure Stage 10: De-emphasis (-6 dB @ 5 kHz after saturation)
+    auto& deEmph = plexiChain.get<10>();
+    *deEmph.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
+        sampleRate * 4.0, 5000.0f, 0.707f, 0.501f);  // -6 dB
+
+    // Configure Stage 11-13: Tone stack (configured in processBlock with proper coefficients)
     // These use IIR shelf/peak filters for proper EQ behavior
 
-    // Configure Stage 12: Power amp (EL34 - softer, more symmetrical)
-    auto& powerAmp = plexiChain.get<12>();
+    // Configure Stage 14: Power amp (EL34 - softer, more symmetrical)
+    auto& powerAmp = plexiChain.get<14>();
     powerAmp.functionToUse = [](float x) {
-        return std::tanh (x * 0.7f);  // Softer clipping than preamp
+        return std::tanh (x * 0.8f);
     };
 
-    // Configure Stage 13: DC blocker
-    auto& dcBlocker = plexiChain.get<13>();
+    // Configure Stage 15: Presence (configured in processBlock)
+    // High-shelf boost for clarity and "air"
+
+    // Configure Stage 16: DC blocker
+    auto& dcBlocker = plexiChain.get<16>();
     dcBlocker.setType (juce::dsp::FirstOrderTPTFilterType::highpass);
     dcBlocker.setCutoffFrequency (5.0f);
 
-    // Stage 14: Master volume (configured in processBlock)
+    // Stage 17: Master volume (configured in processBlock)
 
     // Initialize parameter smoothing (20ms ramp time)
     driveSmoothed.reset (sampleRate, 0.02);
     bassSmoothed.reset (sampleRate, 0.02);
     midSmoothed.reset (sampleRate, 0.02);
     trebleSmoothed.reset (sampleRate, 0.02);
+    presenceSmoothed.reset (sampleRate, 0.02);
     masterSmoothed.reset (sampleRate, 0.02);
 
     // Set initial target values to current parameter values
@@ -225,6 +260,7 @@ void ClaudeAmpProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     bassSmoothed.setCurrentAndTargetValue (apvts.getRawParameterValue ("bass")->load());
     midSmoothed.setCurrentAndTargetValue (apvts.getRawParameterValue ("mid")->load());
     trebleSmoothed.setCurrentAndTargetValue (apvts.getRawParameterValue ("treble")->load());
+    presenceSmoothed.setCurrentAndTargetValue (apvts.getRawParameterValue ("presence")->load());
     masterSmoothed.setCurrentAndTargetValue (apvts.getRawParameterValue ("master")->load());
 
     // Report latency to DAW (from oversampling)
@@ -273,6 +309,7 @@ void ClaudeAmpProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     auto bass = apvts.getRawParameterValue ("bass")->load();
     auto mid = apvts.getRawParameterValue ("mid")->load();
     auto treble = apvts.getRawParameterValue ("treble")->load();
+    auto presence = apvts.getRawParameterValue ("presence")->load();
     auto master = apvts.getRawParameterValue ("master")->load();
 
     // Update smoothed target values
@@ -280,6 +317,7 @@ void ClaudeAmpProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     bassSmoothed.setTargetValue (bass);
     midSmoothed.setTargetValue (mid);
     trebleSmoothed.setTargetValue (treble);
+    presenceSmoothed.setTargetValue (presence);
     masterSmoothed.setTargetValue (master);
 
     // Get current smoothed values
@@ -287,6 +325,7 @@ void ClaudeAmpProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     auto currentBass = bassSmoothed.getNextValue();
     auto currentMid = midSmoothed.getNextValue();
     auto currentTreble = trebleSmoothed.getNextValue();
+    auto currentPresence = presenceSmoothed.getNextValue();
     auto currentMaster = masterSmoothed.getNextValue();
 
     // Update input gain based on Drive (0-10 → 0-20dB, more conservative)
@@ -297,28 +336,35 @@ void ClaudeAmpProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     auto oversampledRate = getSampleRate() * 4.0;
 
     // Bass control: Low-shelf @ 200 Hz (0-10 → ±12 dB)
-    auto& bassTone = plexiChain.get<9>();
+    auto& bassTone = plexiChain.get<11>();
     auto bassGainDB = (currentBass - 5.0f) * 2.4f;  // 0→-12dB, 5→0dB, 10→+12dB
     auto bassGain = juce::Decibels::decibelsToGain (bassGainDB);
     *bassTone.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf (
         oversampledRate, 200.0f, 0.707f, bassGain);
 
     // Mid control: Peaking @ 1 kHz (0-10 → ±12 dB)
-    auto& midTone = plexiChain.get<10>();
+    auto& midTone = plexiChain.get<12>();
     auto midGainDB = (currentMid - 5.0f) * 2.4f;  // 0→-12dB, 5→0dB, 10→+12dB
     auto midGain = juce::Decibels::decibelsToGain (midGainDB);
     *midTone.state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter (
         oversampledRate, 1000.0f, 0.7f, midGain);
 
     // Treble control: High-shelf @ 3 kHz (0-10 → ±12 dB)
-    auto& trebleTone = plexiChain.get<11>();
+    auto& trebleTone = plexiChain.get<13>();
     auto trebleGainDB = (currentTreble - 5.0f) * 2.4f;  // 0→-12dB, 5→0dB, 10→+12dB
     auto trebleGain = juce::Decibels::decibelsToGain (trebleGainDB);
     *trebleTone.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
         oversampledRate, 3000.0f, 0.707f, trebleGain);
 
+    // Presence control: High-shelf @ 3 kHz (0-10 → 0 to +10 dB)
+    auto& presenceFilter = plexiChain.get<15>();
+    auto presenceGainDB = currentPresence * 1.0f;  // 0→0dB, 5→+5dB, 10→+10dB
+    auto presenceGain = juce::Decibels::decibelsToGain (presenceGainDB);
+    *presenceFilter.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
+        oversampledRate, 3000.0f, 0.707f, presenceGain);
+
     // Update master volume (0-10 → -40 to +6 dB for more usable range)
-    auto& masterGain = plexiChain.get<14>();
+    auto& masterGain = plexiChain.get<17>();
     auto masterDB = -40.0f + (currentMaster * 4.6f);  // 0→-40dB, 5→-17dB, 10→+6dB
     masterGain.setGainDecibels (masterDB);
 
