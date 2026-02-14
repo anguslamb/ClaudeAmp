@@ -88,6 +88,13 @@ private:
     juce::dsp::LookupTableTransform<float> tube12AX7LUT;  // Preamp tubes (asymmetric)
     juce::dsp::LookupTableTransform<float> tubeEL34LUT;   // Power amp tube (symmetric)
 
+    // Cabinet IR convolution (Marshall 4x12)
+    juce::dsp::Convolution cabinetIR;
+
+    // Power supply sag modeling
+    float sagEnvelope = 0.0f;  // Tracks signal level for sag
+    float calculatePowerSupplySag (const juce::AudioBuffer<float>& buffer);
+
     // Parameter smoothing (prevents audio clicks)
     juce::SmoothedValue<float> driveSmoothed;
     juce::SmoothedValue<float> bassSmoothed;

@@ -80,6 +80,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout ClaudeAmpProcessor::createPa
         juce::NormalisableRange<float> (0.0f, 10.0f, 0.1f),
         5.0f));
 
+    // Cabinet Simulation (Marshall 4x12)
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        "cabinet",
+        "Cabinet",
+        true));  // Default: enabled
+
     return layout;
 }
 
@@ -209,10 +215,18 @@ void ClaudeAmpProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     auto& bias1 = plexiChain.get<3>();
     bias1.setBias (0.3f);
 
-    // Configure Stage 4: Preamp stage 1 waveshaper (12AX7 tube)
+    // Configure Stage 4: Preamp stage 1 waveshaper (Enhanced 12AX7 model)
     auto& stage1 = plexiChain.get<4>();
     stage1.functionToUse = [](float x) {
-        return (x > 0.0f) ? std::tanh (x * 1.8f) : std::tanh (x * 1.2f);
+        // More accurate 12AX7 triode curve with grid conduction
+        if (x > 2.0f)
+            return 1.0f;  // Hard clipping (grid conduction)
+        else if (x > 0.0f)
+            return x / (1.0f + std::pow (x * 0.8f, 3.0f));  // Asymmetric soft-knee
+        else if (x > -2.0f)
+            return x / (1.0f + std::pow (-x * 0.6f, 2.5f));  // Softer negative
+        else
+            return -0.9f;  // Grid cutoff
     };
 
     // Configure Stage 5: Coupling capacitor HPF (~20 Hz)
@@ -225,10 +239,18 @@ void ClaudeAmpProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     auto& bias2 = plexiChain.get<6>();
     bias2.setBias (0.35f);
 
-    // Configure Stage 7: Preamp stage 2 waveshaper (12AX7)
+    // Configure Stage 7: Preamp stage 2 waveshaper (Enhanced 12AX7)
     auto& stage2 = plexiChain.get<7>();
     stage2.functionToUse = [](float x) {
-        return (x > 0.0f) ? std::tanh (x * 1.8f) : std::tanh (x * 1.2f);
+        // Same enhanced 12AX7 model
+        if (x > 2.0f)
+            return 1.0f;
+        else if (x > 0.0f)
+            return x / (1.0f + std::pow (x * 0.8f, 3.0f));
+        else if (x > -2.0f)
+            return x / (1.0f + std::pow (-x * 0.6f, 2.5f));
+        else
+            return -0.9f;
     };
 
     // Configure Stage 8: Coupling HPF 2
@@ -241,10 +263,18 @@ void ClaudeAmpProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     auto& bias3 = plexiChain.get<9>();
     bias3.setBias (0.4f);  // Heaviest saturation stage
 
-    // Configure Stage 10: Preamp stage 3 waveshaper (12AX7)
+    // Configure Stage 10: Preamp stage 3 waveshaper (Enhanced 12AX7)
     auto& stage3 = plexiChain.get<10>();
     stage3.functionToUse = [](float x) {
-        return (x > 0.0f) ? std::tanh (x * 1.8f) : std::tanh (x * 1.2f);
+        // Same enhanced 12AX7 model
+        if (x > 2.0f)
+            return 1.0f;
+        else if (x > 0.0f)
+            return x / (1.0f + std::pow (x * 0.8f, 3.0f));
+        else if (x > -2.0f)
+            return x / (1.0f + std::pow (-x * 0.6f, 2.5f));
+        else
+            return -0.9f;
     };
 
     // Configure Stage 11: De-emphasis (-6 dB @ 5 kHz after saturation)
@@ -255,10 +285,17 @@ void ClaudeAmpProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     // Configure Stage 12-14: Tone stack (configured in processBlock with proper coefficients)
     // These use IIR shelf/peak filters for proper EQ behavior
 
-    // Configure Stage 15: Power amp (EL34 - softer, more symmetrical)
+    // Configure Stage 15: Power amp (Enhanced EL34 push-pull model)
     auto& powerAmp = plexiChain.get<15>();
     powerAmp.functionToUse = [](float x) {
-        return std::tanh (x * 0.8f);
+        // EL34 power tube: More symmetrical, softer knee than 12AX7
+        // Push-pull operation cancels even harmonics
+        if (x > 3.0f)
+            return 0.95f;  // Soft limiting
+        else if (x < -3.0f)
+            return -0.95f;
+        else
+            return x / (1.0f + std::pow (std::abs (x) * 0.5f, 2.2f)) * std::copysign (1.0f, x);
     };
 
     // Configure Stage 16: Presence (configured in processBlock)
@@ -287,8 +324,52 @@ void ClaudeAmpProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     presenceSmoothed.setCurrentAndTargetValue (apvts.getRawParameterValue ("presence")->load());
     masterSmoothed.setCurrentAndTargetValue (apvts.getRawParameterValue ("master")->load());
 
-    // Report latency to DAW (from oversampling)
-    auto latencySamples = oversampler->getLatencyInSamples();
+    // Initialize cabinet IR convolution
+    cabinetIR.prepare (spec);
+
+    // Create a simple impulse response for Marshall 4x12 cabinet simulation
+    // TODO: Replace with actual measured IR from real Marshall cabinet
+    // This is a basic synthetic IR approximating speaker resonance and room
+    const int irLength = 2048;  // ~40ms @ 48kHz
+    juce::AudioBuffer<float> ir (static_cast<int> (spec.numChannels), irLength);
+
+    for (int channel = 0; channel < ir.getNumChannels(); ++channel)
+    {
+        auto* irData = ir.getWritePointer (channel);
+
+        // Initial impulse with speaker resonance (~80 Hz)
+        for (int i = 0; i < irLength; ++i)
+        {
+            float t = static_cast<float> (i) / static_cast<float> (sampleRate);
+
+            // Direct impulse
+            float direct = (i == 0) ? 0.8f : 0.0f;
+
+            // Speaker resonance (damped sine wave at 80 Hz)
+            float resonance = std::sin (2.0f * juce::MathConstants<float>::pi * 80.0f * t)
+                            * std::exp (-t * 50.0f) * 0.3f;
+
+            // High-frequency rolloff (speaker cone breakup ~4 kHz)
+            float envelope = std::exp (-t * 8.0f);
+
+            // Early reflections (simulated cabinet and room)
+            float reflection1 = (i == 64) ? 0.15f : 0.0f;   // ~1.3ms
+            float reflection2 = (i == 128) ? 0.08f : 0.0f;  // ~2.7ms
+            float reflection3 = (i == 256) ? 0.04f : 0.0f;  // ~5.3ms
+
+            irData[i] = (direct + resonance + reflection1 + reflection2 + reflection3) * envelope;
+        }
+    }
+
+    // Load the IR into the convolution engine
+    cabinetIR.loadImpulseResponse (std::move (ir),
+                                    sampleRate,
+                                    juce::dsp::Convolution::Stereo::yes,
+                                    juce::dsp::Convolution::Trim::no,
+                                    juce::dsp::Convolution::Normalise::yes);
+
+    // Report latency to DAW (from oversampling + convolution)
+    auto latencySamples = oversampler->getLatencyInSamples() + cabinetIR.getLatency();
     setLatencySamples (static_cast<int> (latencySamples));
 }
 
@@ -363,9 +444,13 @@ void ClaudeAmpProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     auto currentPresence = presenceSmoothed.getCurrentValue();
     auto currentMaster = masterSmoothed.getCurrentValue();
 
-    // Update input gain based on Drive (0-10 → 0-20dB, more conservative)
+    // Calculate power supply sag (dynamic compression)
+    float sagAmount = calculatePowerSupplySag (buffer);
+
+    // Update input gain based on Drive with power supply sag compensation
     auto& inputGain = plexiChain.get<0>();
-    inputGain.setGainDecibels (currentDrive * 2.0f);
+    auto driveGain = currentDrive * 2.0f - (sagAmount * 3.0f);  // Sag reduces drive
+    inputGain.setGainDecibels (driveGain);
 
     // Update channel brightness filter (Normal = full-range, Bright = cuts bass, Linked = blend)
     auto& channelFilter = plexiChain.get<1>();
@@ -383,29 +468,37 @@ void ClaudeAmpProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         channelFilter.setCutoffFrequency (500.0f);  // Cuts bass, emphasizes highs
     }
 
-    // Update tone stack filters (use oversampled rate!)
+    // Interactive tone stack (Marshall passive network style)
     auto oversampledRate = getSampleRate() * 4.0;
 
-    // Bass control: Low-shelf @ 200 Hz (0-10 → ±12 dB)
+    // Marshall-style interactive controls where each affects the others
+    // Bass control: Low-shelf with interaction from treble
     auto& bassTone = plexiChain.get<12>();
-    auto bassGainDB = (currentBass - 5.0f) * 2.4f;  // 0→-12dB, 5→0dB, 10→+12dB
+    auto bassFreq = 200.0f - (currentTreble * 15.0f);  // Treble reduces bass frequency
+    auto bassGainDB = (currentBass - 5.0f) * 2.4f;
+    auto bassQ = 0.707f + (currentMid * 0.05f);  // Mid affects bass Q
     auto bassGain = juce::Decibels::decibelsToGain (bassGainDB);
     *bassTone.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf (
-        oversampledRate, 200.0f, 0.707f, bassGain);
+        oversampledRate, bassFreq, bassQ, bassGain);
 
-    // Mid control: Peaking @ 1 kHz (0-10 → ±12 dB)
+    // Mid control: Scooping behavior (like real Plexi)
+    // When turned down, scoops mids. When turned up, boosts mids.
     auto& midTone = plexiChain.get<13>();
-    auto midGainDB = (currentMid - 5.0f) * 2.4f;  // 0→-12dB, 5→0dB, 10→+12dB
+    auto midFreq = 650.0f + (currentBass * 50.0f) + (currentTreble * 30.0f);  // Affected by bass and treble
+    auto midGainDB = (currentMid - 5.0f) * 2.0f;  // ±10 dB (less than bass/treble)
+    auto midQ = 1.2f - (currentBass * 0.05f) - (currentTreble * 0.05f);  // Narrower Q when bass/treble high
     auto midGain = juce::Decibels::decibelsToGain (midGainDB);
     *midTone.state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter (
-        oversampledRate, 1000.0f, 0.7f, midGain);
+        oversampledRate, midFreq, midQ, midGain);
 
-    // Treble control: High-shelf @ 3 kHz (0-10 → ±12 dB)
+    // Treble control: High-shelf with interaction from bass
     auto& trebleTone = plexiChain.get<14>();
-    auto trebleGainDB = (currentTreble - 5.0f) * 2.4f;  // 0→-12dB, 5→0dB, 10→+12dB
+    auto trebleFreq = 3000.0f + (currentBass * 100.0f);  // Bass pushes treble frequency up
+    auto trebleGainDB = (currentTreble - 5.0f) * 2.4f;
+    auto trebleQ = 0.707f + (currentMid * 0.05f);  // Mid affects treble Q
     auto trebleGain = juce::Decibels::decibelsToGain (trebleGainDB);
     *trebleTone.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
-        oversampledRate, 3000.0f, 0.707f, trebleGain);
+        oversampledRate, trebleFreq, trebleQ, trebleGain);
 
     // Presence control: High-shelf @ 3 kHz (0-10 → 0 to +10 dB)
     auto& presenceFilter = plexiChain.get<16>();
@@ -431,6 +524,47 @@ void ClaudeAmpProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     // Downsample back to original rate
     oversampler->processSamplesDown (block);
+
+    // Apply cabinet IR convolution if enabled
+    auto cabinetEnabled = apvts.getRawParameterValue ("cabinet")->load() > 0.5f;
+    if (cabinetEnabled)
+    {
+        juce::dsp::AudioBlock<float> cabinetBlock (buffer);
+        juce::dsp::ProcessContextReplacing<float> cabinetContext (cabinetBlock);
+        cabinetIR.process (cabinetContext);
+    }
+}
+
+//==============================================================================
+// Power Supply Sag Modeling
+float ClaudeAmpProcessor::calculatePowerSupplySag (const juce::AudioBuffer<float>& buffer)
+{
+    // Calculate RMS level of signal (envelope following)
+    float rms = 0.0f;
+    for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+    {
+        auto* data = buffer.getReadPointer (channel);
+        for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+        {
+            rms += data[sample] * data[sample];
+        }
+    }
+    rms = std::sqrt (rms / (buffer.getNumSamples() * buffer.getNumChannels()));
+
+    // Envelope follower with attack/release
+    const float attackCoeff = 0.999f;   // Slow attack (power supply droop)
+    const float releaseCoeff = 0.9995f; // Very slow release (capacitor discharge)
+
+    if (rms > sagEnvelope)
+        sagEnvelope = attackCoeff * sagEnvelope + (1.0f - attackCoeff) * rms;
+    else
+        sagEnvelope = releaseCoeff * sagEnvelope + (1.0f - releaseCoeff) * rms;
+
+    // Convert envelope to sag amount (0-1 range)
+    // More signal = more sag (power supply compression)
+    float sagAmount = std::tanh (sagEnvelope * 8.0f) * 0.4f;  // Max 40% sag
+
+    return sagAmount;
 }
 
 //==============================================================================
