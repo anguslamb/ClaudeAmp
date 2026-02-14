@@ -215,18 +215,23 @@ void ClaudeAmpProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     auto& bias1 = plexiChain.get<3>();
     bias1.setBias (0.3f);
 
-    // Configure Stage 4: Preamp stage 1 waveshaper (Enhanced 12AX7 model)
+    // Configure Stage 4: Preamp stage 1 waveshaper (12AX7 with ~35dB gain)
+    // Real 12AX7: μ=100, practical gain 30-60x in circuit
     auto& stage1 = plexiChain.get<4>();
     stage1.functionToUse = [](float x) {
-        // More accurate 12AX7 triode curve with grid conduction
-        if (x > 2.0f)
+        // 12AX7 first stage: soft overdrive, grid current compression
+        // Amplify significantly before saturation
+        x = x * 40.0f;  // Stage gain (~32dB, representing 12AX7 amplification)
+
+        // Grid conduction and asymmetric clipping
+        if (x > 1.2f)
             return 1.0f;  // Hard clipping (grid conduction)
         else if (x > 0.0f)
-            return x / (1.0f + std::pow (x * 0.8f, 3.0f));  // Asymmetric soft-knee
-        else if (x > -2.0f)
-            return x / (1.0f + std::pow (-x * 0.6f, 2.5f));  // Softer negative
+            return x / (1.0f + std::pow (x * 1.5f, 2.5f));  // Asymmetric soft-knee
+        else if (x > -1.5f)
+            return x / (1.0f + std::pow (-x * 0.8f, 2.0f));  // Softer negative
         else
-            return -0.9f;  // Grid cutoff
+            return -0.95f;  // Grid cutoff
     };
 
     // Configure Stage 5: Coupling capacitor HPF (~20 Hz)
@@ -239,18 +244,22 @@ void ClaudeAmpProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     auto& bias2 = plexiChain.get<6>();
     bias2.setBias (0.35f);
 
-    // Configure Stage 7: Preamp stage 2 waveshaper (Enhanced 12AX7)
+    // Configure Stage 7: Preamp stage 2 waveshaper (12AX7 with ~32dB gain)
+    // Second stage: more gain, harder clipping
     auto& stage2 = plexiChain.get<7>();
     stage2.functionToUse = [](float x) {
-        // Same enhanced 12AX7 model
-        if (x > 2.0f)
-            return 1.0f;
+        // 12AX7 second stage: harder overdrive
+        x = x * 35.0f;  // Stage gain (~31dB)
+
+        // Harder clipping than stage 1
+        if (x > 1.0f)
+            return 0.98f;
         else if (x > 0.0f)
-            return x / (1.0f + std::pow (x * 0.8f, 3.0f));
-        else if (x > -2.0f)
-            return x / (1.0f + std::pow (-x * 0.6f, 2.5f));
+            return x / (1.0f + std::pow (x * 2.0f, 2.2f));  // Harder asymmetric
+        else if (x > -1.2f)
+            return x / (1.0f + std::pow (-x * 1.2f, 2.0f));
         else
-            return -0.9f;
+            return -0.92f;
     };
 
     // Configure Stage 8: Coupling HPF 2
@@ -263,18 +272,22 @@ void ClaudeAmpProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     auto& bias3 = plexiChain.get<9>();
     bias3.setBias (0.4f);  // Heaviest saturation stage
 
-    // Configure Stage 10: Preamp stage 3 waveshaper (Enhanced 12AX7)
+    // Configure Stage 10: Preamp stage 3 waveshaper (12AX7 with ~28dB gain)
+    // Third stage: heaviest saturation, most aggressive clipping
     auto& stage3 = plexiChain.get<10>();
     stage3.functionToUse = [](float x) {
-        // Same enhanced 12AX7 model
-        if (x > 2.0f)
-            return 1.0f;
+        // 12AX7 third stage: most aggressive
+        x = x * 25.0f;  // Stage gain (~28dB)
+
+        // Very aggressive clipping
+        if (x > 0.8f)
+            return 0.95f;
         else if (x > 0.0f)
-            return x / (1.0f + std::pow (x * 0.8f, 3.0f));
-        else if (x > -2.0f)
-            return x / (1.0f + std::pow (-x * 0.6f, 2.5f));
+            return x / (1.0f + std::pow (x * 2.5f, 2.0f));  // Hard asymmetric
+        else if (x > -1.0f)
+            return x / (1.0f + std::pow (-x * 1.5f, 1.8f));
         else
-            return -0.9f;
+            return -0.90f;
     };
 
     // Configure Stage 11: De-emphasis (-6 dB @ 5 kHz after saturation)
@@ -285,17 +298,20 @@ void ClaudeAmpProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     // Configure Stage 12-14: Tone stack (configured in processBlock with proper coefficients)
     // These use IIR shelf/peak filters for proper EQ behavior
 
-    // Configure Stage 15: Power amp (Enhanced EL34 push-pull model)
+    // Configure Stage 15: Power amp (EL34 push-pull with ~25dB gain)
+    // EL34: More symmetrical than 12AX7, natural compression
     auto& powerAmp = plexiChain.get<15>();
     powerAmp.functionToUse = [](float x) {
-        // EL34 power tube: More symmetrical, softer knee than 12AX7
-        // Push-pull operation cancels even harmonics
-        if (x > 3.0f)
+        // EL34 power tube stage gain (~25dB, representing phase inverter + power amp)
+        x = x * 18.0f;  // ~25dB gain
+
+        // Symmetrical soft clipping (push-pull cancels even harmonics)
+        if (x > 1.5f)
             return 0.95f;  // Soft limiting
-        else if (x < -3.0f)
+        else if (x < -1.5f)
             return -0.95f;
         else
-            return x / (1.0f + std::pow (std::abs (x) * 0.5f, 2.2f)) * std::copysign (1.0f, x);
+            return x / (1.0f + std::pow (std::abs (x) * 1.2f, 2.0f)) * std::copysign (1.0f, x);
     };
 
     // Configure Stage 16: Presence (configured in processBlock)
@@ -447,9 +463,11 @@ void ClaudeAmpProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     // Calculate power supply sag (dynamic compression)
     float sagAmount = calculatePowerSupplySag (buffer);
 
-    // Update input gain based on Drive with power supply sag compensation
+    // Update input gain based on Drive parameter
+    // Real Plexi has 60-90dB total preamp gain (3 stages @ 30-40dB each)
+    // Drive controls the input level feeding the cascaded gain stages
     auto& inputGain = plexiChain.get<0>();
-    auto driveGain = currentDrive * 2.0f - (sagAmount * 3.0f);  // Sag reduces drive
+    auto driveGain = currentDrive * 6.0f - (sagAmount * 8.0f);  // 0→0dB, 5→30dB, 10→60dB
     inputGain.setGainDecibels (driveGain);
 
     // Update channel brightness filter
