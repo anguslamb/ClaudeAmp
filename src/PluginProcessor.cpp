@@ -197,17 +197,8 @@ void ClaudeAmpProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
         return std::tanh (x * 1.8f);  // Hardest clipping
     };
 
-    // Configure Stage 9: Tone stack bass filter
-    auto& bassTone = plexiChain.get<9>();
-    bassTone.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
-
-    // Configure Stage 10: Tone stack mid filter
-    auto& midTone = plexiChain.get<10>();
-    midTone.setType (juce::dsp::StateVariableTPTFilterType::bandpass);
-
-    // Configure Stage 11: Tone stack treble filter
-    auto& trebleTone = plexiChain.get<11>();
-    trebleTone.setType (juce::dsp::StateVariableTPTFilterType::highpass);
+    // Configure Stage 9-11: Tone stack (configured in processBlock with proper coefficients)
+    // These use IIR shelf/peak filters for proper EQ behavior
 
     // Configure Stage 12: Power amp (EL34 - softer, more symmetrical)
     auto& powerAmp = plexiChain.get<12>();
@@ -298,35 +289,37 @@ void ClaudeAmpProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     auto currentTreble = trebleSmoothed.getNextValue();
     auto currentMaster = masterSmoothed.getNextValue();
 
-    // Update input gain based on Drive (0-10 → 0-30dB)
+    // Update input gain based on Drive (0-10 → 0-20dB, more conservative)
     auto& inputGain = plexiChain.get<0>();
-    inputGain.setGainDecibels (currentDrive * 3.0f);
+    inputGain.setGainDecibels (currentDrive * 2.0f);
 
-    // Update tone stack filters
-    // Bass control (0-10 → cutoff 100-500 Hz)
+    // Update tone stack filters (use oversampled rate!)
+    auto oversampledRate = getSampleRate() * 4.0;
+
+    // Bass control: Low-shelf @ 200 Hz (0-10 → ±12 dB)
     auto& bassTone = plexiChain.get<9>();
-    auto bassFreq = 100.0f + (currentBass * 40.0f);  // 100-500 Hz
-    auto bassQ = 0.707f + (currentBass * 0.3f);      // More resonance = more boost
-    bassTone.setCutoffFrequency (bassFreq);
-    bassTone.setResonance (bassQ);
+    auto bassGainDB = (currentBass - 5.0f) * 2.4f;  // 0→-12dB, 5→0dB, 10→+12dB
+    auto bassGain = juce::Decibels::decibelsToGain (bassGainDB);
+    *bassTone.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf (
+        oversampledRate, 200.0f, 0.707f, bassGain);
 
-    // Mid control (0-10 → center 500-2000 Hz)
+    // Mid control: Peaking @ 1 kHz (0-10 → ±12 dB)
     auto& midTone = plexiChain.get<10>();
-    auto midFreq = 500.0f + (currentMid * 150.0f);   // 500-2000 Hz
-    auto midQ = 0.5f + (currentMid * 0.5f);          // 0.5-1.0
-    midTone.setCutoffFrequency (midFreq);
-    midTone.setResonance (midQ);
+    auto midGainDB = (currentMid - 5.0f) * 2.4f;  // 0→-12dB, 5→0dB, 10→+12dB
+    auto midGain = juce::Decibels::decibelsToGain (midGainDB);
+    *midTone.state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter (
+        oversampledRate, 1000.0f, 0.7f, midGain);
 
-    // Treble control (0-10 → cutoff 2000-8000 Hz)
+    // Treble control: High-shelf @ 3 kHz (0-10 → ±12 dB)
     auto& trebleTone = plexiChain.get<11>();
-    auto trebleFreq = 2000.0f + (currentTreble * 600.0f);  // 2000-8000 Hz
-    auto trebleQ = 0.707f;
-    trebleTone.setCutoffFrequency (trebleFreq);
-    trebleTone.setResonance (trebleQ);
+    auto trebleGainDB = (currentTreble - 5.0f) * 2.4f;  // 0→-12dB, 5→0dB, 10→+12dB
+    auto trebleGain = juce::Decibels::decibelsToGain (trebleGainDB);
+    *trebleTone.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
+        oversampledRate, 3000.0f, 0.707f, trebleGain);
 
-    // Update master volume (0-10 → -60 to +6 dB)
+    // Update master volume (0-10 → -40 to +6 dB for more usable range)
     auto& masterGain = plexiChain.get<14>();
-    auto masterDB = -60.0f + (currentMaster * 6.6f);  // 0→-60dB, 10→+6dB
+    auto masterDB = -40.0f + (currentMaster * 4.6f);  // 0→-40dB, 5→-17dB, 10→+6dB
     masterGain.setGainDecibels (masterDB);
 
     // Process audio through chain with oversampling

@@ -53,6 +53,10 @@ private:
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
     // Marshall Plexi amp modeling chain
+    using Filter = juce::dsp::ProcessorDuplicator<
+        juce::dsp::IIR::Filter<float>,
+        juce::dsp::IIR::Coefficients<float>>;
+
     using PlexiChain = juce::dsp::ProcessorChain<
         juce::dsp::Gain<float>,                    // 0: Input level (controlled by Drive)
         juce::dsp::Bias<float>,                    // 1: Asymmetric bias stage 1
@@ -63,9 +67,9 @@ private:
         juce::dsp::StateVariableTPTFilter<float>,  // 6: Coupling HPF 2
         juce::dsp::Bias<float>,                    // 7: Asymmetric bias stage 3
         juce::dsp::WaveShaper<float>,              // 8: Preamp stage 3 (12AX7)
-        juce::dsp::StateVariableTPTFilter<float>,  // 9: Tone stack bass
-        juce::dsp::StateVariableTPTFilter<float>,  // 10: Tone stack mid
-        juce::dsp::StateVariableTPTFilter<float>,  // 11: Tone stack treble
+        Filter,                                     // 9: Tone stack bass (low-shelf)
+        Filter,                                     // 10: Tone stack mid (peaking)
+        Filter,                                     // 11: Tone stack treble (high-shelf)
         juce::dsp::WaveShaper<float>,              // 12: Power amp (EL34)
         juce::dsp::FirstOrderTPTFilter<float>,     // 13: DC blocker
         juce::dsp::Gain<float>                     // 14: Master volume
