@@ -14,7 +14,7 @@ cmake_minimum_required(VERSION 3.22)
 # `project()` command. `project()` sets up some helpful variables that describe source/binary
 # directories, and the current project version. This is a standard CMake command.
 
-project(ClaudeAmp VERSION 1.0.0)
+project(ClaudeAmp VERSION 2.0.0)
 
 # If you've installed JUCE somehow (via a package manager, or directly using the CMake install
 # target), you'll need to tell this project that it depends on the installed copy of JUCE. If you've
@@ -47,7 +47,7 @@ juce_add_plugin(ClaudeAmp
     PLUGIN_MANUFACTURER_CODE Clau               # A four-character manufacturer id with at least one upper-case character
     PLUGIN_CODE Camp                            # A unique four-character plugin id with exactly one upper-case character
     FORMATS AU VST3 Standalone                  # The formats to build. Other valid formats are: AAX Unity VST AU AUv3
-    PRODUCT_NAME "ClaudeAmp")                   # The name of the final executable, which can differ from the target name
+    PRODUCT_NAME "ClaudeAmp Plexi")             # The name of the final executable, which can differ from the target name
 
 # `juce_generate_juce_header` will create a JuceHeader.h for a given target, which will be generated
 # into your build tree. This should be included with `#include <JuceHeader.h>`. The include path for

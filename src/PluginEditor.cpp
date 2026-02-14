@@ -5,13 +5,26 @@
 ClaudeAmpProcessorEditor::ClaudeAmpProcessorEditor (ClaudeAmpProcessor& p)
     : AudioProcessorEditor (&p), processorRef (p)
 {
-    // Set editor size (640x240 for 4 knobs)
-    setSize (640, 240);
+    // Set editor size (800x240 for 5 knobs)
+    setSize (800, 240);
+
+    // Configure drive slider
+    driveSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
+    driveSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 80, 20);
+    driveSlider.setTextValueSuffix ("");
+    addAndMakeVisible (driveSlider);
+    driveAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+        processorRef.apvts, "drive", driveSlider);
+
+    driveLabel.setText ("DRIVE", juce::dontSendNotification);
+    driveLabel.setJustificationType (juce::Justification::centred);
+    driveLabel.attachToComponent (&driveSlider, false);
+    addAndMakeVisible (driveLabel);
 
     // Configure bass slider
     bassSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
     bassSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 80, 20);
-    bassSlider.setTextValueSuffix (" dB");
+    bassSlider.setTextValueSuffix ("");
     addAndMakeVisible (bassSlider);
     bassAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
         processorRef.apvts, "bass", bassSlider);
@@ -24,7 +37,7 @@ ClaudeAmpProcessorEditor::ClaudeAmpProcessorEditor (ClaudeAmpProcessor& p)
     // Configure mid slider
     midSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
     midSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 80, 20);
-    midSlider.setTextValueSuffix (" dB");
+    midSlider.setTextValueSuffix ("");
     addAndMakeVisible (midSlider);
     midAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
         processorRef.apvts, "mid", midSlider);
@@ -37,7 +50,7 @@ ClaudeAmpProcessorEditor::ClaudeAmpProcessorEditor (ClaudeAmpProcessor& p)
     // Configure treble slider
     trebleSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
     trebleSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 80, 20);
-    trebleSlider.setTextValueSuffix (" dB");
+    trebleSlider.setTextValueSuffix ("");
     addAndMakeVisible (trebleSlider);
     trebleAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
         processorRef.apvts, "treble", trebleSlider);
@@ -50,7 +63,7 @@ ClaudeAmpProcessorEditor::ClaudeAmpProcessorEditor (ClaudeAmpProcessor& p)
     // Configure master slider
     masterSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
     masterSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 80, 20);
-    masterSlider.setTextValueSuffix (" dB");
+    masterSlider.setTextValueSuffix ("");
     addAndMakeVisible (masterSlider);
     masterAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
         processorRef.apvts, "master", masterSlider);
@@ -74,7 +87,7 @@ void ClaudeAmpProcessorEditor::paint (juce::Graphics& g)
     // Title
     g.setColour (juce::Colours::white);
     g.setFont (24.0f);
-    g.drawText ("ClaudeAmp", getLocalBounds().removeFromTop (40),
+    g.drawText ("ClaudeAmp Plexi", getLocalBounds().removeFromTop (40),
                 juce::Justification::centred, true);
 }
 
@@ -86,13 +99,17 @@ void ClaudeAmpProcessorEditor::resized()
     auto knobWidth = 120;
     auto knobHeight = 140;
 
-    // Calculate spacing for 4 knobs
-    auto totalKnobWidth = knobWidth * 4;
-    auto spacing = (area.getWidth() - totalKnobWidth) / 5;
+    // Calculate spacing for 5 knobs
+    auto totalKnobWidth = knobWidth * 5;
+    auto spacing = (area.getWidth() - totalKnobWidth) / 6;
 
     // Position knobs from left to right
     auto x = spacing;
     auto y = area.getY() + 20;
+
+    // Drive knob (leftmost)
+    driveSlider.setBounds (x, y, knobWidth, knobHeight);
+    x += knobWidth + spacing;
 
     // Bass knob
     bassSlider.setBounds (x, y, knobWidth, knobHeight);
@@ -106,6 +123,6 @@ void ClaudeAmpProcessorEditor::resized()
     trebleSlider.setBounds (x, y, knobWidth, knobHeight);
     x += knobWidth + spacing;
 
-    // Master knob (on the right)
+    // Master knob (rightmost)
     masterSlider.setBounds (x, y, knobWidth, knobHeight);
 }
