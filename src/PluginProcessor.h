@@ -59,23 +59,24 @@ private:
 
     using PlexiChain = juce::dsp::ProcessorChain<
         juce::dsp::Gain<float>,                    // 0: Input level (controlled by Drive)
-        Filter,                                     // 1: Pre-emphasis (+6dB @ 5kHz)
-        juce::dsp::Bias<float>,                    // 2: Asymmetric bias stage 1
-        juce::dsp::WaveShaper<float>,              // 3: Preamp stage 1 (12AX7)
-        juce::dsp::StateVariableTPTFilter<float>,  // 4: Coupling HPF 1
-        juce::dsp::Bias<float>,                    // 5: Asymmetric bias stage 2
-        juce::dsp::WaveShaper<float>,              // 6: Preamp stage 2 (12AX7)
-        juce::dsp::StateVariableTPTFilter<float>,  // 7: Coupling HPF 2
-        juce::dsp::Bias<float>,                    // 8: Asymmetric bias stage 3
-        juce::dsp::WaveShaper<float>,              // 9: Preamp stage 3 (12AX7)
-        Filter,                                     // 10: De-emphasis (-6dB @ 5kHz)
-        Filter,                                     // 11: Tone stack bass (low-shelf)
-        Filter,                                     // 12: Tone stack mid (peaking)
-        Filter,                                     // 13: Tone stack treble (high-shelf)
-        juce::dsp::WaveShaper<float>,              // 14: Power amp (EL34)
-        Filter,                                     // 15: Presence (high-shelf boost)
-        juce::dsp::FirstOrderTPTFilter<float>,     // 16: DC blocker
-        juce::dsp::Gain<float>                     // 17: Master volume
+        juce::dsp::StateVariableTPTFilter<float>,  // 1: Channel brightness (Normal=10Hz, Bright=500Hz HPF)
+        Filter,                                     // 2: Pre-emphasis (+6dB @ 5kHz)
+        juce::dsp::Bias<float>,                    // 3: Asymmetric bias stage 1
+        juce::dsp::WaveShaper<float>,              // 4: Preamp stage 1 (12AX7)
+        juce::dsp::StateVariableTPTFilter<float>,  // 5: Coupling HPF 1
+        juce::dsp::Bias<float>,                    // 6: Asymmetric bias stage 2
+        juce::dsp::WaveShaper<float>,              // 7: Preamp stage 2 (12AX7)
+        juce::dsp::StateVariableTPTFilter<float>,  // 8: Coupling HPF 2
+        juce::dsp::Bias<float>,                    // 9: Asymmetric bias stage 3
+        juce::dsp::WaveShaper<float>,              // 10: Preamp stage 3 (12AX7)
+        Filter,                                     // 11: De-emphasis (-6dB @ 5kHz)
+        Filter,                                     // 12: Tone stack bass (low-shelf)
+        Filter,                                     // 13: Tone stack mid (peaking)
+        Filter,                                     // 14: Tone stack treble (high-shelf)
+        juce::dsp::WaveShaper<float>,              // 15: Power amp (EL34)
+        Filter,                                     // 16: Presence (high-shelf boost)
+        juce::dsp::FirstOrderTPTFilter<float>,     // 17: DC blocker
+        juce::dsp::Gain<float>                     // 18: Master volume
     >;
 
     PlexiChain plexiChain;
@@ -94,6 +95,25 @@ private:
     juce::SmoothedValue<float> trebleSmoothed;
     juce::SmoothedValue<float> presenceSmoothed;
     juce::SmoothedValue<float> masterSmoothed;
+
+    // Preset management
+    int currentPreset = 0;
+    void loadPreset (int presetIndex);
+    void initializeFactoryPresets();
+
+    struct PresetData
+    {
+        juce::String name;
+        int channel;      // 0=Normal, 1=Bright
+        bool link;
+        float drive;
+        float bass;
+        float mid;
+        float treble;
+        float presence;
+        float master;
+    };
+    std::vector<PresetData> factoryPresets;
 
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ClaudeAmpProcessor)

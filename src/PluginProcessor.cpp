@@ -13,6 +13,7 @@ ClaudeAmpProcessor::ClaudeAmpProcessor()
                        ),
        apvts (*this, nullptr, "PARAMETERS", createParameterLayout())
 {
+    initializeFactoryPresets();
 }
 
 ClaudeAmpProcessor::~ClaudeAmpProcessor()
@@ -23,6 +24,19 @@ ClaudeAmpProcessor::~ClaudeAmpProcessor()
 juce::AudioProcessorValueTreeState::ParameterLayout ClaudeAmpProcessor::createParameterLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
+
+    // Channel Selection (Normal/Bright like real Plexi)
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        "channel",
+        "Channel",
+        juce::StringArray ("Normal", "Bright"),
+        0));  // 0 = Normal, 1 = Bright
+
+    // Channel Linking (jumper cable simulation)
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        "link",
+        "Link Channels",
+        false));  // Default: not linked
 
     // Preamp Drive (0-10 like real Marshall Plexi)
     layout.add (std::make_unique<juce::AudioParameterFloat> (
@@ -109,22 +123,27 @@ double ClaudeAmpProcessor::getTailLengthSeconds() const
 
 int ClaudeAmpProcessor::getNumPrograms()
 {
-    return 1;
+    return static_cast<int> (factoryPresets.size());
 }
 
 int ClaudeAmpProcessor::getCurrentProgram()
 {
-    return 0;
+    return currentPreset;
 }
 
 void ClaudeAmpProcessor::setCurrentProgram (int index)
 {
-    juce::ignoreUnused (index);
+    if (index >= 0 && index < static_cast<int> (factoryPresets.size()))
+    {
+        currentPreset = index;
+        loadPreset (index);
+    }
 }
 
 const juce::String ClaudeAmpProcessor::getProgramName (int index)
 {
-    juce::ignoreUnused (index);
+    if (index >= 0 && index < static_cast<int> (factoryPresets.size()))
+        return factoryPresets[index].name;
     return {};
 }
 
@@ -176,76 +195,81 @@ void ClaudeAmpProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     auto& inputGain = plexiChain.get<0>();
     inputGain.setGainDecibels (0.0f);
 
-    // Configure Stage 1: Pre-emphasis (+6 dB @ 5 kHz before saturation)
-    auto& preEmph = plexiChain.get<1>();
+    // Configure Stage 1: Channel brightness filter (configured in processBlock)
+    // Normal: 10 Hz HPF (full-range), Bright: 500 Hz HPF (emphasizes highs)
+    auto& channelFilter = plexiChain.get<1>();
+    channelFilter.setType (juce::dsp::StateVariableTPTFilterType::highpass);
+
+    // Configure Stage 2: Pre-emphasis (+6 dB @ 5 kHz before saturation)
+    auto& preEmph = plexiChain.get<2>();
     *preEmph.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
         sampleRate * 4.0, 5000.0f, 0.707f, 1.995f);  // +6 dB
 
-    // Configure Stage 2: Preamp stage 1 bias (asymmetric for 12AX7)
-    auto& bias1 = plexiChain.get<2>();
+    // Configure Stage 3: Preamp stage 1 bias (asymmetric for 12AX7)
+    auto& bias1 = plexiChain.get<3>();
     bias1.setBias (0.3f);
 
-    // Configure Stage 3: Preamp stage 1 waveshaper (12AX7 tube)
-    auto& stage1 = plexiChain.get<3>();
+    // Configure Stage 4: Preamp stage 1 waveshaper (12AX7 tube)
+    auto& stage1 = plexiChain.get<4>();
     stage1.functionToUse = [](float x) {
         return (x > 0.0f) ? std::tanh (x * 1.8f) : std::tanh (x * 1.2f);
     };
 
-    // Configure Stage 4: Coupling capacitor HPF (~20 Hz)
-    auto& hpf1 = plexiChain.get<4>();
+    // Configure Stage 5: Coupling capacitor HPF (~20 Hz)
+    auto& hpf1 = plexiChain.get<5>();
     hpf1.setType (juce::dsp::StateVariableTPTFilterType::highpass);
     hpf1.setCutoffFrequency (20.0f);
     hpf1.setResonance (0.707f);
 
-    // Configure Stage 5: Preamp stage 2 bias
-    auto& bias2 = plexiChain.get<5>();
+    // Configure Stage 6: Preamp stage 2 bias
+    auto& bias2 = plexiChain.get<6>();
     bias2.setBias (0.35f);
 
-    // Configure Stage 6: Preamp stage 2 waveshaper (12AX7)
-    auto& stage2 = plexiChain.get<6>();
+    // Configure Stage 7: Preamp stage 2 waveshaper (12AX7)
+    auto& stage2 = plexiChain.get<7>();
     stage2.functionToUse = [](float x) {
         return (x > 0.0f) ? std::tanh (x * 1.8f) : std::tanh (x * 1.2f);
     };
 
-    // Configure Stage 7: Coupling HPF 2
-    auto& hpf2 = plexiChain.get<7>();
+    // Configure Stage 8: Coupling HPF 2
+    auto& hpf2 = plexiChain.get<8>();
     hpf2.setType (juce::dsp::StateVariableTPTFilterType::highpass);
     hpf2.setCutoffFrequency (20.0f);
     hpf2.setResonance (0.707f);
 
-    // Configure Stage 8: Preamp stage 3 bias
-    auto& bias3 = plexiChain.get<8>();
+    // Configure Stage 9: Preamp stage 3 bias
+    auto& bias3 = plexiChain.get<9>();
     bias3.setBias (0.4f);  // Heaviest saturation stage
 
-    // Configure Stage 9: Preamp stage 3 waveshaper (12AX7)
-    auto& stage3 = plexiChain.get<9>();
+    // Configure Stage 10: Preamp stage 3 waveshaper (12AX7)
+    auto& stage3 = plexiChain.get<10>();
     stage3.functionToUse = [](float x) {
         return (x > 0.0f) ? std::tanh (x * 1.8f) : std::tanh (x * 1.2f);
     };
 
-    // Configure Stage 10: De-emphasis (-6 dB @ 5 kHz after saturation)
-    auto& deEmph = plexiChain.get<10>();
+    // Configure Stage 11: De-emphasis (-6 dB @ 5 kHz after saturation)
+    auto& deEmph = plexiChain.get<11>();
     *deEmph.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
         sampleRate * 4.0, 5000.0f, 0.707f, 0.501f);  // -6 dB
 
-    // Configure Stage 11-13: Tone stack (configured in processBlock with proper coefficients)
+    // Configure Stage 12-14: Tone stack (configured in processBlock with proper coefficients)
     // These use IIR shelf/peak filters for proper EQ behavior
 
-    // Configure Stage 14: Power amp (EL34 - softer, more symmetrical)
-    auto& powerAmp = plexiChain.get<14>();
+    // Configure Stage 15: Power amp (EL34 - softer, more symmetrical)
+    auto& powerAmp = plexiChain.get<15>();
     powerAmp.functionToUse = [](float x) {
         return std::tanh (x * 0.8f);
     };
 
-    // Configure Stage 15: Presence (configured in processBlock)
+    // Configure Stage 16: Presence (configured in processBlock)
     // High-shelf boost for clarity and "air"
 
-    // Configure Stage 16: DC blocker
-    auto& dcBlocker = plexiChain.get<16>();
+    // Configure Stage 17: DC blocker
+    auto& dcBlocker = plexiChain.get<17>();
     dcBlocker.setType (juce::dsp::FirstOrderTPTFilterType::highpass);
     dcBlocker.setCutoffFrequency (5.0f);
 
-    // Stage 17: Master volume (configured in processBlock)
+    // Stage 18: Master volume (configured in processBlock)
 
     // Initialize parameter smoothing (20ms ramp time)
     driveSmoothed.reset (sampleRate, 0.02);
@@ -305,6 +329,8 @@ void ClaudeAmpProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         buffer.clear (i, 0, buffer.getNumSamples());
 
     // Get parameter values (thread-safe atomic read)
+    auto channel = static_cast<int> (apvts.getRawParameterValue ("channel")->load());
+    auto link = apvts.getRawParameterValue ("link")->load() > 0.5f;
     auto drive = apvts.getRawParameterValue ("drive")->load();
     auto bass = apvts.getRawParameterValue ("bass")->load();
     auto mid = apvts.getRawParameterValue ("mid")->load();
@@ -332,39 +358,55 @@ void ClaudeAmpProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     auto& inputGain = plexiChain.get<0>();
     inputGain.setGainDecibels (currentDrive * 2.0f);
 
+    // Update channel brightness filter (Normal = full-range, Bright = cuts bass, Linked = blend)
+    auto& channelFilter = plexiChain.get<1>();
+    if (link)  // Channel linking enabled - blend both channels
+    {
+        // Use intermediate cutoff to approximate Normal + Bright blend
+        channelFilter.setCutoffFrequency (200.0f);  // Blend: some bass cut, fuller than Bright alone
+    }
+    else if (channel == 0)  // Normal channel
+    {
+        channelFilter.setCutoffFrequency (10.0f);  // Essentially full-range
+    }
+    else  // Bright channel
+    {
+        channelFilter.setCutoffFrequency (500.0f);  // Cuts bass, emphasizes highs
+    }
+
     // Update tone stack filters (use oversampled rate!)
     auto oversampledRate = getSampleRate() * 4.0;
 
     // Bass control: Low-shelf @ 200 Hz (0-10 → ±12 dB)
-    auto& bassTone = plexiChain.get<11>();
+    auto& bassTone = plexiChain.get<12>();
     auto bassGainDB = (currentBass - 5.0f) * 2.4f;  // 0→-12dB, 5→0dB, 10→+12dB
     auto bassGain = juce::Decibels::decibelsToGain (bassGainDB);
     *bassTone.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf (
         oversampledRate, 200.0f, 0.707f, bassGain);
 
     // Mid control: Peaking @ 1 kHz (0-10 → ±12 dB)
-    auto& midTone = plexiChain.get<12>();
+    auto& midTone = plexiChain.get<13>();
     auto midGainDB = (currentMid - 5.0f) * 2.4f;  // 0→-12dB, 5→0dB, 10→+12dB
     auto midGain = juce::Decibels::decibelsToGain (midGainDB);
     *midTone.state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter (
         oversampledRate, 1000.0f, 0.7f, midGain);
 
     // Treble control: High-shelf @ 3 kHz (0-10 → ±12 dB)
-    auto& trebleTone = plexiChain.get<13>();
+    auto& trebleTone = plexiChain.get<14>();
     auto trebleGainDB = (currentTreble - 5.0f) * 2.4f;  // 0→-12dB, 5→0dB, 10→+12dB
     auto trebleGain = juce::Decibels::decibelsToGain (trebleGainDB);
     *trebleTone.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
         oversampledRate, 3000.0f, 0.707f, trebleGain);
 
     // Presence control: High-shelf @ 3 kHz (0-10 → 0 to +10 dB)
-    auto& presenceFilter = plexiChain.get<15>();
+    auto& presenceFilter = plexiChain.get<16>();
     auto presenceGainDB = currentPresence * 1.0f;  // 0→0dB, 5→+5dB, 10→+10dB
     auto presenceGain = juce::Decibels::decibelsToGain (presenceGainDB);
     *presenceFilter.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
         oversampledRate, 3000.0f, 0.707f, presenceGain);
 
     // Update master volume (0-10 → -40 to +6 dB for more usable range)
-    auto& masterGain = plexiChain.get<17>();
+    auto& masterGain = plexiChain.get<18>();
     auto masterDB = -40.0f + (currentMaster * 4.6f);  // 0→-40dB, 5→-17dB, 10→+6dB
     masterGain.setGainDecibels (masterDB);
 
@@ -408,6 +450,82 @@ void ClaudeAmpProcessor::setStateInformation (const void* data, int sizeInBytes)
     if (xmlState != nullptr)
         if (xmlState->hasTagName (apvts.state.getType()))
             apvts.replaceState (juce::ValueTree::fromXml (*xmlState));
+}
+
+//==============================================================================
+// Preset Management
+
+void ClaudeAmpProcessor::initializeFactoryPresets()
+{
+    // Preset 0: Clean
+    factoryPresets.push_back ({
+        "Clean",
+        0,      // Normal channel
+        false,  // Not linked
+        2.5f,   // Drive
+        5.0f,   // Bass
+        5.0f,   // Mid
+        6.0f,   // Treble
+        4.0f,   // Presence
+        6.0f    // Master
+    });
+
+    // Preset 1: Crunch
+    factoryPresets.push_back ({
+        "Crunch",
+        1,      // Bright channel
+        false,  // Not linked
+        6.0f,   // Drive
+        4.0f,   // Bass
+        6.0f,   // Mid
+        7.0f,   // Treble
+        5.0f,   // Presence
+        5.0f    // Master
+    });
+
+    // Preset 2: Lead
+    factoryPresets.push_back ({
+        "Lead",
+        0,      // Normal channel
+        false,  // Not linked
+        8.5f,   // Drive
+        4.0f,   // Bass
+        7.0f,   // Mid
+        8.0f,   // Treble
+        6.0f,   // Presence
+        4.5f    // Master
+    });
+
+    // Preset 3: Plexi Stack (Linked channels)
+    factoryPresets.push_back ({
+        "Plexi Stack",
+        0,      // Channel (ignored when linked)
+        true,   // Linked
+        7.5f,   // Drive
+        5.0f,   // Bass
+        6.5f,   // Mid
+        7.5f,   // Treble
+        5.5f,   // Presence
+        5.0f    // Master
+    });
+}
+
+void ClaudeAmpProcessor::loadPreset (int presetIndex)
+{
+    if (presetIndex < 0 || presetIndex >= static_cast<int> (factoryPresets.size()))
+        return;
+
+    const auto& preset = factoryPresets[presetIndex];
+
+    // Update all parameters
+    apvts.getParameter ("channel")->setValueNotifyingHost (static_cast<float> (preset.channel));
+    apvts.getParameter ("link")->setValueNotifyingHost (preset.link ? 1.0f : 0.0f);
+    apvts.getParameter ("drive")->setValueNotifyingHost (preset.drive / 10.0f);
+    apvts.getParameter ("bass")->setValueNotifyingHost (preset.bass / 10.0f);
+    apvts.getParameter ("mid")->setValueNotifyingHost (preset.mid / 10.0f);
+    apvts.getParameter ("treble")->setValueNotifyingHost (preset.treble / 10.0f);
+    apvts.getParameter ("presence")->setValueNotifyingHost (preset.presence / 10.0f);
+    apvts.getParameter ("master")->setValueNotifyingHost (preset.master / 10.0f);
 }
 
 //==============================================================================
