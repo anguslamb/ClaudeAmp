@@ -271,13 +271,13 @@ void ClaudeAmpProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 
     // Stage 18: Master volume (configured in processBlock)
 
-    // Initialize parameter smoothing (20ms ramp time)
-    driveSmoothed.reset (sampleRate, 0.02);
-    bassSmoothed.reset (sampleRate, 0.02);
-    midSmoothed.reset (sampleRate, 0.02);
-    trebleSmoothed.reset (sampleRate, 0.02);
-    presenceSmoothed.reset (sampleRate, 0.02);
-    masterSmoothed.reset (sampleRate, 0.02);
+    // Initialize parameter smoothing (5ms ramp time for responsive feel)
+    driveSmoothed.reset (sampleRate, 0.005);
+    bassSmoothed.reset (sampleRate, 0.005);
+    midSmoothed.reset (sampleRate, 0.005);
+    trebleSmoothed.reset (sampleRate, 0.005);
+    presenceSmoothed.reset (sampleRate, 0.005);
+    masterSmoothed.reset (sampleRate, 0.005);
 
     // Set initial target values to current parameter values
     driveSmoothed.setCurrentAndTargetValue (apvts.getRawParameterValue ("drive")->load());
@@ -346,13 +346,22 @@ void ClaudeAmpProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     presenceSmoothed.setTargetValue (presence);
     masterSmoothed.setTargetValue (master);
 
-    // Get current smoothed values
-    auto currentDrive = driveSmoothed.getNextValue();
-    auto currentBass = bassSmoothed.getNextValue();
-    auto currentMid = midSmoothed.getNextValue();
-    auto currentTreble = trebleSmoothed.getNextValue();
-    auto currentPresence = presenceSmoothed.getNextValue();
-    auto currentMaster = masterSmoothed.getNextValue();
+    // Advance smoothing by the number of samples in this block
+    auto numSamples = buffer.getNumSamples();
+    driveSmoothed.skip (numSamples);
+    bassSmoothed.skip (numSamples);
+    midSmoothed.skip (numSamples);
+    trebleSmoothed.skip (numSamples);
+    presenceSmoothed.skip (numSamples);
+    masterSmoothed.skip (numSamples);
+
+    // Get current smoothed values (after advancing)
+    auto currentDrive = driveSmoothed.getCurrentValue();
+    auto currentBass = bassSmoothed.getCurrentValue();
+    auto currentMid = midSmoothed.getCurrentValue();
+    auto currentTreble = trebleSmoothed.getCurrentValue();
+    auto currentPresence = presenceSmoothed.getCurrentValue();
+    auto currentMaster = masterSmoothed.getCurrentValue();
 
     // Update input gain based on Drive (0-10 → 0-20dB, more conservative)
     auto& inputGain = plexiChain.get<0>();
