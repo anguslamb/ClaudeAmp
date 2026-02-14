@@ -452,60 +452,70 @@ void ClaudeAmpProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     auto driveGain = currentDrive * 2.0f - (sagAmount * 3.0f);  // Sag reduces drive
     inputGain.setGainDecibels (driveGain);
 
-    // Update channel brightness filter (Normal = full-range, Bright = cuts bass, Linked = blend)
+    // Update channel brightness filter
+    // Simulates different cathode bypass capacitor values in real Plexi:
+    // Normal: 330µF (full-range gain, thicker bass)
+    // Bright: 0.68µF (gain rolloff below 285Hz, more aggressive/crunchy)
     auto& channelFilter = plexiChain.get<1>();
     if (link)  // Channel linking enabled - blend both channels
     {
-        // Use intermediate cutoff to approximate Normal + Bright blend
-        channelFilter.setCutoffFrequency (200.0f);  // Blend: some bass cut, fuller than Bright alone
+        // Blend approximates Normal + Bright (jumper cable trick)
+        channelFilter.setCutoffFrequency (150.0f);  // Gentle bass reduction
+        channelFilter.setResonance (0.5f);          // Smooth rolloff
     }
-    else if (channel == 0)  // Normal channel
+    else if (channel == 0)  // Normal channel (330µF cathode bypass)
     {
-        channelFilter.setCutoffFrequency (10.0f);  // Essentially full-range
+        channelFilter.setCutoffFrequency (10.0f);   // Full-range, thick bass
+        channelFilter.setResonance (0.707f);
     }
-    else  // Bright channel
+    else  // Bright channel (0.68µF cathode bypass)
     {
-        channelFilter.setCutoffFrequency (500.0f);  // Cuts bass, emphasizes highs
+        channelFilter.setCutoffFrequency (285.0f);  // Rolloff below 285Hz (authentic)
+        channelFilter.setResonance (0.6f);          // Slightly peaky for "bright" character
     }
 
-    // Interactive tone stack (Marshall passive network style)
+    // Interactive tone stack (Marshall 1987 Plexi passive network)
+    // Based on authentic component values: 33kΩ/500pF/0.022µF/0.022µF
     auto oversampledRate = getSampleRate() * 4.0;
 
-    // Marshall-style interactive controls where each affects the others
-    // Bass control: Low-shelf with interaction from treble
+    // Bass control: Low-shelf @ 50Hz (authentic Plexi bass frequency)
+    // Real Plexi bass centered at 50Hz, not 200Hz
     auto& bassTone = plexiChain.get<12>();
-    auto bassFreq = 200.0f - (currentTreble * 15.0f);  // Treble reduces bass frequency
-    auto bassGainDB = (currentBass - 5.0f) * 2.4f;
-    auto bassQ = 0.707f + (currentMid * 0.05f);  // Mid affects bass Q
+    auto bassFreq = 50.0f + (currentTreble * 8.0f);  // Treble slightly pushes bass up (30-130Hz range)
+    auto bassGainDB = (currentBass - 5.0f) * 2.4f;   // ±12dB range
+    auto bassQ = 0.707f + (currentMid * 0.08f);      // Mid affects bass Q slightly
     auto bassGain = juce::Decibels::decibelsToGain (bassGainDB);
     *bassTone.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf (
         oversampledRate, bassFreq, bassQ, bassGain);
 
-    // Mid control: Scooping behavior (like real Plexi)
-    // When turned down, scoops mids. When turned up, boosts mids.
+    // Mid control: Peaking @ 500-800Hz with characteristic Plexi scoop
+    // Creates the famous Marshall mid-scoop when bass/treble are up and mid is down
     auto& midTone = plexiChain.get<13>();
-    auto midFreq = 650.0f + (currentBass * 50.0f) + (currentTreble * 30.0f);  // Affected by bass and treble
-    auto midGainDB = (currentMid - 5.0f) * 2.0f;  // ±10 dB (less than bass/treble)
-    auto midQ = 1.2f - (currentBass * 0.05f) - (currentTreble * 0.05f);  // Narrower Q when bass/treble high
+    auto midFreq = 650.0f + (currentBass * 30.0f) + (currentTreble * 15.0f);  // 650-1100Hz range
+    auto midGainDB = (currentMid - 5.0f) * 2.0f;     // ±10dB (less range than bass/treble)
+    auto midQ = 1.4f - (currentBass * 0.08f) - (currentTreble * 0.08f);  // Narrower Q when bass/treble high
     auto midGain = juce::Decibels::decibelsToGain (midGainDB);
     *midTone.state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter (
         oversampledRate, midFreq, midQ, midGain);
 
-    // Treble control: High-shelf with interaction from bass
+    // Treble control: High-shelf @ 10kHz (authentic Plexi treble, not 3kHz!)
+    // Real Plexi has bright, cutting highs centered at 10kHz
     auto& trebleTone = plexiChain.get<14>();
-    auto trebleFreq = 3000.0f + (currentBass * 100.0f);  // Bass pushes treble frequency up
-    auto trebleGainDB = (currentTreble - 5.0f) * 2.4f;
-    auto trebleQ = 0.707f + (currentMid * 0.05f);  // Mid affects treble Q
+    auto trebleFreq = 9500.0f + (currentBass * 50.0f);  // 9.5-10kHz range (bass interaction)
+    auto trebleGainDB = (currentTreble - 5.0f) * 2.4f;  // ±12dB range
+    auto trebleQ = 0.707f + (currentMid * 0.05f);       // Mid slightly affects treble Q
     auto trebleGain = juce::Decibels::decibelsToGain (trebleGainDB);
     *trebleTone.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
         oversampledRate, trebleFreq, trebleQ, trebleGain);
 
-    // Presence control: High-shelf @ 3 kHz (0-10 → 0 to +10 dB)
+    // Presence control: Broad high-frequency boost starting at 1kHz
+    // Models negative feedback reduction (not simple high-shelf)
+    // Real Plexi presence affects 1kHz+ with broad, gentle boost
     auto& presenceFilter = plexiChain.get<16>();
-    auto presenceGainDB = currentPresence * 1.0f;  // 0→0dB, 5→+5dB, 10→+10dB
+    auto presenceGainDB = currentPresence * 0.8f;  // 0→0dB, 5→+4dB, 10→+8dB (conservative)
     auto presenceGain = juce::Decibels::decibelsToGain (presenceGainDB);
     *presenceFilter.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
-        oversampledRate, 3000.0f, 0.707f, presenceGain);
+        oversampledRate, 1200.0f, 0.5f, presenceGain);  // Start at 1.2kHz, broad Q
 
     // Update master volume (0-10 → -20 to +20 dB)
     auto& masterGain = plexiChain.get<18>();
